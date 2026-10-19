@@ -1,0 +1,16 @@
+{
+  "name": "@uoox/opencode-workbuddy-tasks",
+  "version": "0.1.0",
+  "description": "magpie plugin: WorkBuddy daily check-in plus growth tasks, cat travel, streak keeper, night-owl task (China build) and the daily active session (international build), on top of @magpie-community/opencode-workbuddy-auth's sign-in",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "src", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": ["magpie", "magpie-plugin", "opencode-plugin", "workbuddy", "codebuddy", "checkin"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/uoox/magpie-workbuddy-tasks.git" },
+  "engines": { "bun": ">=1.1" }
+}
