@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { CN, checkin, growth, runCN, travel, streakBonus } from "../src/cn.mjs"
+import { CN, RERUN_MS, checkin, growth, report, runCN, travel, streakBonus, useClient } from "../src/cn.mjs"
 import { account, fakeFetch, ok, testCtx } from "./fake.mjs"
 
 const STATUS = `POST ${CN.chat}/v2/billing/meter/checkin-activity-status`
@@ -16,7 +16,7 @@ describe("checkin", () => {
     expect(r).toMatchObject({ outcome: "claimed", credit: 20, streak: 4 })
     const h = f.calls[1].headers
     expect(h.authorization).toBe("Bearer ACCESS-SECRET-TOKEN")
-    expect(h["user-agent"]).toBe("WorkBuddy/5.5.6")
+    expect(h["user-agent"]).toBe("WorkBuddy/5.9.3")
     expect(h["x-user-id"]).toBe("100012345678")
   })
 
@@ -57,6 +57,40 @@ describe("checkin", () => {
       [SUMMARY, () => ({ status: 401, text: "<html>401</html>" })],
     ])
     expect((await checkin(testCtx(f.fetch), account)).outcome).toBe("failed")
+  })
+
+  test("a claim WorkBuddy says is still pending or failed is a failure to retry", async () => {
+    for (const message of ["请求处理中，请勿重复操作", "签到失败，已签到天数不足 7 天"]) {
+      const f = fakeFetch([
+        [STATUS, () => ok({ active: true, today_checked_in: false })],
+        [CLAIM, () => ok({ credit: 0, message })],
+      ])
+      expect((await checkin(testCtx(f.fetch), account)).outcome).toBe("failed")
+    }
+  })
+
+  test("a transient billing failure is asked again twice", async () => {
+    let n = 0
+    const f = fakeFetch([
+      [STATUS, () => ok({ active: true, today_checked_in: false })],
+      [CLAIM, () => (++n < 3 ? { status: 502, text: "bad gateway" } : ok({ credit: 20, streak_days: 1 }))],
+    ])
+    expect(await checkin(testCtx(f.fetch), account)).toMatchObject({ outcome: "claimed", credit: 20 })
+    expect(n).toBe(3)
+  })
+
+  test("the client version follows the community plugin's", async () => {
+    useClient({ app: "6.0.1", cli: "2.200.0" })
+    try {
+      const f = fakeFetch([[STATUS, () => ok({ active: false })], [`POST ${CN.chat}/v2/report`, () => ok(null)]])
+      await checkin(testCtx(f.fetch), account)
+      await report(testCtx(f.fetch), account, [{ eventCode: "heartbeat" }])
+      expect(f.calls[0].headers["user-agent"]).toBe("WorkBuddy/6.0.1")
+      expect(f.calls[1].headers["user-agent"]).toBe("WorkBuddy/6.0.1 WorkBuddy/6.0.1 CLI/2.200.0")
+      expect(f.calls[1].headers["x-ide-version"]).toBe("6.0.1")
+    } finally {
+      useClient({ app: "5.9.3", cli: "2.165.0" })
+    }
   })
 
   test("11140 is ineligible and restricted", async () => {
@@ -133,6 +167,13 @@ describe("growth tasks", () => {
     expect(notes[0]).toContain("1 个需真人操作")
     const acceptCall = s.f.hits("POST", `${CN.chat}/v2/activity/growth/tasks/accept`)[0]
     expect(acceptCall.body.task_codes).not.toContain("wb_wechat_oa_subscribe_task")
+  })
+
+  test("the Valorant task reports its own expert", async () => {
+    const s = growthServer({ tasks: [{ task_code: "WorkBuddy_Valorant", accept_status: "accepted", task_type: "single", progress: { current: 0, target: 1 } }] })
+    await growth(testCtx(s.f.fetch), account, [])
+    const ev = s.reported.find((e) => e.eventCode === "expert_actual_use")
+    expect(ev).toMatchObject({ id: "ex_xQHHD1u5Jkua", name: "无畏契约拼豆专家" })
   })
 
   test("a task whose accept fails is not reported", async () => {
@@ -264,6 +305,21 @@ describe("a day's run", () => {
     const r = await runCN(testCtx(f.fetch, { now: Date.parse("2026-10-20T16:30:00Z") }), account, { rec: nightRec, day: "2026-10-21" })
     expect(r.message).toContain("夜猫子 1/3")
     expect(nightRec.done.night).toBe(true)
+  })
+
+  test("travel and growth wait three hours before they run again", async () => {
+    const { f } = dayServer()
+    const rec = {}
+    const ctx = testCtx(f.fetch)
+    await runCN(ctx, account, { rec, day: "2026-10-20" })
+    const travels = () => f.hits("GET", `${CN.chat}/activity/growth/buddy/travel/status`).length
+    const lists = () => f.hits("GET", `${CN.chat}/v2/activity/growth/tasks`).length
+    const [t0, l0] = [travels(), lists()]
+    await runCN(testCtx(f.fetch, { now: ctx.now() + 30 * 60 * 1000 }), account, { rec, day: "2026-10-20" })
+    expect([travels(), lists()]).toEqual([t0, l0])
+    await runCN(testCtx(f.fetch, { now: ctx.now() + RERUN_MS }), account, { rec, day: "2026-10-20" })
+    expect(travels()).toBe(t0 + 1)
+    expect(lists()).toBeGreaterThan(l0)
   })
 
   test("options turn steps off", async () => {

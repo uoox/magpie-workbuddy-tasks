@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import { runCN } from "./cn.mjs"
+import { runCN, useClient } from "./cn.mjs"
 import { runIntl } from "./intl.mjs"
 import { record } from "./state.mjs"
 import { dayOf, hashOf, makeCtx, short } from "./util.mjs"
@@ -23,7 +23,8 @@ export const OPTIONS = {
     { key: "growth", label: "成长任务与积分任务", description: "批量接取任务、上报对应行为事件、领奖。属于伪造行为事件，风险最高。", default: true },
   ],
   "workbuddy-ai": [
-    { key: "daily-active", label: "国际版每日活跃会话", description: "在网页端开一条云端 agent 会话说一句 Hi 并跑完，领官方每日 30/50 积分包。", default: true },
+    { key: "daily-active", label: "国际版每日活跃会话", description: "在网页端开一条云端 agent 会话说一句 Hi 并跑完，领官方每日 30/50 积分包。跑完即结束会话，释放活跃名额。", default: true },
+    { key: "random-prompt", label: "每日会话用随机提示词", description: "从 60 条内置的日常小问题里随机挑一句代替 Hi，免得每天都是同一句。", default: false },
   ],
 }
 
@@ -81,7 +82,8 @@ export async function checkinFor(id, getAuth, deps = {}) {
     a = (await deps.fresh?.(raw)) ?? raw
   } catch {}
   if (!a?.access || !a?.uid) return { outcome: "failed", message: "登录态里缺 token 或 uid，请重新登录" }
-  const key = `${id}|${hashOf(a.uid)}`
+  const ent = typeof a.enterpriseId === "string" ? a.enterpriseId.trim() : ""
+  const key = `${id}|${hashOf(ent ? `${a.uid}|${ent}` : a.uid)}`
   const running = flights.get(key)
   if (running) return running
   const job = (async () => {
@@ -111,12 +113,14 @@ export async function serve(id, input, deps = {}) {
   if (!base.auth || base.auth.provider !== id) return {}
   const fresh = mod._internal?.fresh
   const siteOf = mod._internal?.SITES?.[id]
+  if (id === "workbuddy") useClient(siteOf)
+  const defaults = Object.fromEntries(OPTIONS[id].map((o) => [o.key, o.default === true]))
   const option = (key) => {
     try {
       const f = input?.magpie?.option
-      return typeof f === "function" ? f(id, key) === true : true
+      return typeof f === "function" ? f(id, key) === true : defaults[key] ?? true
     } catch {
-      return true
+      return defaults[key] ?? true
     }
   }
   const keys = new Set(OPTIONS[id].map((o) => o.key))

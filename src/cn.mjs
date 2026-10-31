@@ -8,8 +8,14 @@ export const CN = {
   web: "https://www.workbuddy.cn",
 }
 
-export const VERSION = "5.5.6"
-export const UA_DESKTOP = `WorkBuddy/${VERSION} WorkBuddy/${VERSION} CLI/2.137.1`
+export const CLIENT = { app: "5.9.3", cli: "2.165.0" }
+
+export function useClient(site) {
+  if (typeof site?.app === "string" && site.app) CLIENT.app = site.app
+  if (typeof site?.cli === "string" && site.cli) CLIENT.cli = site.cli
+}
+
+const uaDesktop = () => `WorkBuddy/${CLIENT.app} WorkBuddy/${CLIENT.app} CLI/${CLIENT.cli}`
 export const UA_WEB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 
 export const SPECS = {
@@ -30,6 +36,7 @@ export const SPECS = {
   RichMeow_Chat: { kind: "richmeow", target: 1, name: "桌面对话事件链" },
   Library_read: { kind: "library", target: 1, name: "浏览资料库" },
   first_buddy: { kind: "chat", target: 1, name: "领取一只 Buddy" },
+  WorkBuddy_Valorant: { kind: "expert", target: 1, name: "体验无畏契约拼豆专家", expert: ["ex_xQHHD1u5Jkua", "无畏契约拼豆专家"] },
   wb_wechat_oa_subscribe_task: { unforgeable: true, name: "关注官方公众号" },
   Expert_Philanthropy: { unforgeable: true, name: "公益爱心捐赠" },
 }
@@ -66,7 +73,7 @@ export function meterHeaders(a) {
   return {
     "Content-Type": "application/json",
     Accept: "application/json",
-    "User-Agent": "WorkBuddy/" + VERSION,
+    "User-Agent": "WorkBuddy/" + CLIENT.app,
     Authorization: "Bearer " + a.access,
     "X-User-Id": a.uid ?? "",
     "X-Domain": domainOf(a),
@@ -90,11 +97,11 @@ export function chatHeaders(a) {
     "X-Agent-Type": "main",
     "X-IDE-Name": "WorkBuddy",
     "X-IDE-Type": "WorkBuddy",
-    "X-IDE-Version": VERSION,
+    "X-IDE-Version": CLIENT.app,
     "X-Private-Data": "true",
     "X-Product": "SaaS",
     "X-Domain": domainOf(a),
-    "User-Agent": UA_DESKTOP,
+    "User-Agent": uaDesktop(),
     "X-User-Id": a.uid ?? "",
     Authorization: "Bearer " + a.access,
     "X-Request-ID": hex(),
@@ -107,7 +114,7 @@ export function billingHeaders(a) {
     "Content-Type": "application/json",
     Accept: "application/json, text/plain, */*",
     "X-Requested-With": "XMLHttpRequest",
-    "User-Agent": "WorkBuddy/" + VERSION,
+    "User-Agent": "WorkBuddy/" + CLIENT.app,
     Origin: CN.billing,
     Referer: CN.billing + "/",
     Authorization: "Bearer " + a.access,
@@ -146,15 +153,25 @@ export async function checkin(ctx, a) {
   }
   if (!st.active) return { outcome: "inactive", message: "签到活动当前未开启" }
   if (st.today_checked_in) return { outcome: "done", credit: num(st.today_credit), streak: num(st.streak_days), message: "今天已签到" }
-  try {
-    const got = (await call(ctx, "POST", CN.chat + "/v2/billing/meter/daily-checkin", meterHeaders(a), {})) ?? {}
-    return { outcome: "claimed", credit: num(got.credit), streak: num(got.streak_days), message: got.message ? `签到：${got.message}` : "签到成功" }
-  } catch (e) {
-    const r = await refused(ctx, a, e)
-    if (r.outcome === "done") r.streak = num(st.streak_days)
-    return r
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const got = (await call(ctx, "POST", CN.chat + "/v2/billing/meter/daily-checkin", meterHeaders(a), {})) ?? {}
+      const said = String(got.message ?? "")
+      if (PENDING.test(said) || /失败/.test(said)) return { outcome: "failed", message: `签到没成：${said}` }
+      return { outcome: "claimed", credit: num(got.credit), streak: num(got.streak_days), message: said ? `签到：${said}` : "签到成功" }
+    } catch (e) {
+      if (!e?.restricted && (e?.status >= 500 || e?.code === 10000) && attempt < 2) {
+        await ctx.sleep(2000 * (attempt + 1))
+        continue
+      }
+      const r = await refused(ctx, a, e)
+      if (r.outcome === "done") r.streak = num(st.streak_days)
+      return r
+    }
   }
 }
+
+const PENDING = /处理中|请勿重复操作|系统繁忙|稍后再试/
 
 async function refused(ctx, a, e) {
   if (e?.restricted) return { outcome: "ineligible", restricted: true, message: "WorkBuddy 以 11140 风控限制了这个账号，本插件今天不再碰它；需在 WorkBuddy 里提交反馈申诉" }
@@ -167,7 +184,7 @@ async function refused(ctx, a, e) {
     }
   }
   const msg = short(e)
-  if (e?.code === 1001 || /已签到/.test(msg)) return { outcome: "done", message: "今天已签到" }
+  if (e?.code === 1001 || (/已签到/.test(msg) && !PENDING.test(msg))) return { outcome: "done", message: "今天已签到" }
   if (e?.code === 1002) return { outcome: "ineligible", message: `账号不能参加签到：${msg}` }
   if (e?.code === 1003) return { outcome: "inactive", message: `签到活动已结束：${msg}` }
   return { outcome: "failed", message: `签到失败：${msg}` }
@@ -287,7 +304,7 @@ async function progress(ctx, a, t, tally) {
   if (t.code === "black_cat") return 0
   if (t.status === "not_accepted" && t.type !== "auto") return 0
   const need = Math.max(1, t.target - t.current)
-  const pool = spec.kind === "team" ? TEAMS : spec.kind === "expert" ? EXPERTS : null
+  const pool = spec.expert ? [spec.expert] : spec.kind === "team" ? TEAMS : spec.kind === "expert" ? EXPERTS : null
   for (let i = 0; i < need; i++) {
     const expert = pool ? pool[(t.current + i) % pool.length] : undefined
     await report(ctx, a, [buildEvent(a, spec.kind, i, expert, ctx.now())])
@@ -500,6 +517,8 @@ export async function night(ctx, a, notes) {
   return true
 }
 
+export const RERUN_MS = 3 * 3600 * 1000
+
 export const STEPS = [
   { key: "activity", label: "对话活跃上报", daily: true, run: (ctx, a, notes) => activity(ctx, a, notes) },
   { key: "travel", label: "猫猫旅行", run: (ctx, a, notes) => travel(ctx, a, notes) },
@@ -513,6 +532,7 @@ export async function runCN(ctx, a, { option = () => true, rec = {}, day = dayOf
   const notes = []
   rec.done ??= {}
   if (rec.done.day !== day) rec.done = { day }
+  rec.ran ??= {}
   if (head.restricted) rec.restricted = day
   if (rec.restricted === day) {
     if (!head.restricted) notes.push("今天已遇到 11140 风控，跳过自动任务")
@@ -522,6 +542,7 @@ export async function runCN(ctx, a, { option = () => true, rec = {}, day = dayOf
     for (const s of STEPS) {
       if (!option(s.key)) continue
       if (s.daily && rec.done[s.key]) continue
+      if (!s.daily && ctx.now() - num(rec.ran[s.key]) < RERUN_MS) continue
       if (ctx.left() < 5000) {
         notes.push(`${s.label}留到下次（本轮时间用完）`)
         continue
@@ -529,6 +550,7 @@ export async function runCN(ctx, a, { option = () => true, rec = {}, day = dayOf
       try {
         const done = await s.run(ctx, a, notes, day)
         if (s.daily && done) rec.done[s.key] = true
+        if (!s.daily) rec.ran[s.key] = ctx.now()
       } catch (e) {
         if (e?.restricted) {
           rec.restricted = day
