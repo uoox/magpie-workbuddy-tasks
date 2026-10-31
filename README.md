@@ -6,26 +6,30 @@
 |---|---|---|
 | 每日签到 | 国内版 | 查签到活动状态，开着且今天没签就签 |
 | 对话活跃上报 | 国内版 | 每天上报一条 `chat_request_send` 事件，点亮成长中心连登天数和热力墙 |
-| 猫猫旅行 | 国内版 | 归来领奖；在家且今天没去过就派出；没有 Buddy 先完成「领取一只 Buddy」 |
 | 夜猫子任务 | 国内版 | 签到发生在北京时间 23:00–08:00 时上报一次夜间事件，累计 3 天领奖 |
 | 连登管家 | 国内版 | 昨日漏签且有补签卡就补签；7/14/28 天档位解锁即兑换；抽完抽奖次数；领新手礼包、活动补偿 |
-| 成长任务与积分任务 | 国内版 | 批量接取、按任务上报行为事件、等进度到账后领奖 |
+| 成长任务与积分任务 | 国内版 | 批量接取、按任务上报行为事件、等进度到账后领奖；主题任务先真的应用和平精英主题再上报 |
+| Buddy 能量盲盒 | 国内版 | 成长任务领完奖后，能量够开几个就开几个 |
+| 猫猫旅行 | 国内版 | 归来领奖；在家且今天没去过就派出；没有 Buddy 先完成「领取一只 Buddy」 |
+| 每日签到 | 国际版 | www.workbuddy.ai 的签到活动开着且今天没签就签，没开时什么都不做 |
+| 对话活跃上报 | 国际版 | 默认关。每天上报一条 `chat_request_send` 事件，点亮国际版成长中心连登 |
 | 每日活跃会话 | 国际版 | 在 www.workbuddy.ai 网页端开一条云端 agent 会话，说一句 Hi（可选随机日常小问题）并跑完，领官方每日 30/50 积分包；跑完即结束会话释放名额，名额满时自动结束本插件留下的旧会话 |
 
 积分余额、Token 刷新、多账号、对话请求本身仍由社区插件和 magpie 负责，本插件不重复实现。
 
 ## 原理
 
-- magpie 给插件的 `auth` 钩子留了 `checkin(getAuth, provider)`：签到开关打开后，magpie 对每个已登录账号每个北京日调一次（启动 2 分钟后第一次，之后每 30 分钟看一眼，北京时间 0 点日切时立刻再看；`failed` 30 分钟后重试；北京时间正午前的 `done` / `inactive` / `ineligible` 算临时结果，30 分钟后再问，直到正午；其余结果当天不再调）。结果显示在用量卡片和「设置 → 用量 → 插件」里。因为会被再问，猫猫旅行和成长任务距上次跑不满 3 小时就跳过，其余步骤每天只做一次。
-- 同一个 provider id 只能由一个插件服务。本插件导入 magpie 已安装的社区插件模块（`<magpie 配置目录>/plugins/node_modules/@magpie-community/opencode-workbuddy-auth`，与 magpie 加载的是同一份模块实例），原样转发它的 `config`、`chat.headers`、`provider`、`auth`（登录方式、`loader`、`usage`、`refresh`），只在 `auth` 上加 `checkin` 和插件选项。用 `magpie plugin use` 让本插件服务 `workbuddy` / `workbuddy-ai` 后，登录态仍是 magpie `plugin-auth.json` 里按 provider id 存的那一份，**不用重新登录**；对话、模型、额度行为与社区插件完全相同。
+- magpie 给插件的 `auth` 钩子留了 `checkin(getAuth, provider)`：签到开关打开后，magpie 对每个已登录账号每个北京日调一次（启动 2 分钟后第一次，之后每 30 分钟看一眼，北京时间 0 点日切时立刻再看；`failed` 30 分钟后重试，钩子抛错按「没连上」1 分钟起退避；北京时间正午前的 `done` / `inactive` / `ineligible` 算临时结果，30 分钟后再问，直到正午；结果带 `until` 时到点再问；其余结果当天不再调）。调钩子前 magpie 已经替账号续好 token。结果显示在用量卡片和「设置 → 用量 → 插件」里。
+- magpie 一轮签到按顺序问所有插件的所有账号，总共只等 2 分钟。所以每个账号的钩子最多等 45 秒：跑完就报完整结果；没跑完就先报签到结果（国际版报 `inactive`），说明里写「其余任务还在后台跑」，带 `until` 让 magpie 10 分钟后再问，任务在插件宿主里继续跑（国内版最多 4 分钟、国际版最多 3 分钟），下次被问时报完整结果。同一账号同时只跑一轮。
+- 因为会被再问，猫猫旅行、成长任务和盲盒距上次跑不满 3 小时就跳过，其余步骤每天只做一次。
+- 同一个 provider id 只能由一个插件服务。本插件导入 magpie 已安装的社区插件模块（`<magpie 配置目录>/plugins/node_modules/@magpie-community/opencode-workbuddy-auth`，与 magpie 加载的是同一份模块实例），原样转发它的 `config`、`chat.headers`、`provider`、`auth`（登录方式、`loader`、`usage`、`refresh`、`options`），只在 `auth` 上换掉 `checkin`、追加本插件的选项。用 `magpie plugin use` 让本插件服务 `workbuddy` / `workbuddy-ai` 后，登录态仍是 magpie `plugin-auth.json` 里按 provider id 存的那一份，**不用重新登录**；对话、模型、额度行为与社区插件完全相同。
 - 找不到社区插件时本插件什么都不注册，社区插件照常单独服务。
-- 社区插件 0.2.0 起自带国内版签到钩子，走的是同一组 `/v2/billing/meter` 接口。本插件服务 `workbuddy` 时用自己的签到替代它（同样对 5xx 和 `code 10000` 重试两次），另外把 11140 风控、「处理中，请勿重复操作」和带「失败」字样的回执分别认作风控和失败，不当签到成功。同一账号不会被签两次。
-- 每次签到先签到（国内版）再跑其余步骤。每个账号一轮有时间预算（国内版 75 秒、国际版 100 秒），因为 magpie 一轮签到对所有账号总共只等 2 分钟；做不完的成长任务留到下一天。同一账号同时只跑一轮。
-- 每天只该做一次的步骤（活跃上报、夜猫子、连登管家、国际版会话）记在 `<magpie 配置目录>/workbuddy-tasks.json`：键是 provider 加 uid 的哈希，内容只有日期、完成标记、各步骤上次运行时间、国际版最近建过的会话 id 和最后一条结果说明，不含 token、uid。可用环境变量 `MAGPIE_WORKBUDDY_TASKS_STATE` 改位置。
-- 请求头：签到与积分接口沿用社区插件的写法（`copilot.tencent.com`，`User-Agent: WorkBuddy/<版本>`）；成长、猫猫、上报接口用 wb-proxy 的桌面端身份头。版本号跟随已装社区插件声明的桌面端版本（当前 5.9.3、CLI 2.165.0），和同一账号的对话请求保持一致；`www.codebuddy.cn` 的计费接口带 wb-proxy 同算法派生的 `X-Machine-ID` / `X-Session-ID`（`md5("<salt>:<uid>")` 改成 UUIDv4 形状，salt 为 `machine` / `session`，同账号恒定、跨账号不同）。
+- 社区插件 0.2.0 起自带国内版签到钩子，走的是同一组 `/v2/billing/meter` 接口。本插件服务 `workbuddy` 时用自己的签到替代它（同样对 5xx 和 `code 10000` 重试两次、没连上就抛错），另外把 11140 风控、「处理中，请勿重复操作」和带「失败」字样的回执分别认作风控和失败，不当签到成功。桌面端登录态（社区插件直接读桌面端的登录文件）本插件拿不到 token，交给社区插件自己的签到钩子，不跑其余任务；API key 登录报 `ineligible`。同一账号不会被签两次。
+- 每天只该做一次的步骤（活跃上报、夜猫子、连登管家、国际版会话）记在 `<magpie 配置目录>/workbuddy-tasks.json`：键是 provider 加 uid（企业账号再加企业 id）的哈希，内容只有日期、完成标记、各步骤上次运行时间、国际版最近建过的会话 id 和最后一条结果说明，不含 token、uid。同一 uid 的个人账号和企业账号（社区插件 0.2.1 起分开登录）因此各记各的，互不串结果。
+- 请求头：签到与积分接口沿用社区插件的写法（`User-Agent: WorkBuddy/<版本>`，`X-Domain` 取登录态里的 domain）；成长、猫猫、上报接口用桌面端 CLI 身份头（`WorkBuddy/<版本> <应用名>/<版本> CLI/<版本>`）。版本号跟随已装社区插件声明的桌面端版本（当前两个版本都是 5.9.3、CLI 2.165.0），和同一账号的对话请求保持一致；`www.codebuddy.cn` 的计费接口带 wb-proxy 同算法派生的 `X-Machine-ID` / `X-Session-ID`（`md5("<salt>:<uid>")` 改成 UUIDv4 形状，salt 为 `machine` / `session`，同账号恒定、跨账号不同）。
 - 任何接口回 403 `code 11140`（账号被风控限制）立即停手，当天不再碰这个账号。
-- 同一 uid 的个人账号和企业账号（社区插件 0.2.1 起分开登录）各记各的状态，互不串结果。
 - 国际版每个账号同时最多 10 条活跃会话（超了建会话回 429 `10105`）。每日会话跑完就 stop（留在网页端历史里），没跑完的 stop 后删掉；开跑前先 stop 本插件留下、超过 30 分钟还在跑的会话；撞上 10105 时按创建时间从旧到新 stop 本插件的会话，把活跃数降到 8 再建一次。只认本插件记下的最近 16 条会话 id，或名字是 `Hi` / 内置提示词的会话（服务端有时会给会话自动改标题），用户自己的对话不碰。建会话或取沙箱失败（5xx、超时、沙箱未就绪）时间够就隔 5 秒再试一轮。
+- 国际版的签到成功了但每日会话失败时整体报 `failed`，让 magpie 30 分钟后重试会话（签到那边下次会报已签）。
 
 ### 定时任务与 magpie 每日钩子
 
@@ -57,12 +61,13 @@ magpie plugin                                           # 看到本插件服务 
 
 ## 风险
 
-- **成长任务、活跃上报、夜猫子都是伪造的行为事件**（客户端埋点 `/v2/report`），不是真的在桌面端做了这些事。WorkBuddy 可以据此判定异常。wb-proxy 社区记录过国际版自 2026-10-15 起风控明显收紧（403 `11140`「账号存在异常行为，已被限制使用」），被限制后只能在 WorkBuddy 里提交反馈申诉。怕风险就在选项里关掉 `growth`、`activity`、`night`，只留签到和猫猫。
+- **成长任务、活跃上报、夜猫子都是伪造的行为事件**（客户端埋点 `/v2/report`），不是真的在桌面端做了这些事。WorkBuddy 可以据此判定异常。wb-proxy 社区记录过国际版自 2026-10-15 起风控明显收紧（403 `11140`「账号存在异常行为，已被限制使用」），被限制后只能在 WorkBuddy 里提交反馈申诉。怕风险就在选项里关掉 `growth`、`activity`、`night`，只留签到、猫猫和盲盒。
 - 签到接口可能回 401：WorkBuddy 官方 App 的签到带安全 SDK 生成的 `X-Device-Token`，第三方做不出来。此时积分接口正常的话插件报 `captcha`，magpie 会提示「在它自己的 App 里签到」，当天不再重试；其余步骤照跑。
-- 国际版每日活跃会在 WorkBuddy 云端真的开一个 agent 会话（默认用免费的 `deepseek-v4.1-flash`），会出现在网页端会话列表里。0.2.0 之前的版本跑完不收尾，每天漏一条活跃会话，十天后建不出新会话；升级后第一次跑会自动清掉。
+- 成长任务里的「应用主题外观」会真的把账号的桌面端主题换成和平精英（任务要求），之后可以在 WorkBuddy 里自己换回去。
+- 国际版每日活跃会在 WorkBuddy 云端真的开一个 agent 会话（默认用免费的 `deepseek-v4.1-flash`），会出现在网页端会话列表里。0.2.0 之前的版本不收尾：跑完的会话自己会变成 completed，但中途失败的会一直停在 working 占名额，攒满 10 条就建不出新会话；升级后第一次跑会自动清掉本插件留下的这种会话。
 - 「关注公众号」「公益捐赠」这类需要真人的任务、以及只认桌面端真实点击的任务（资料库、Buddy 应用、桌面对话事件链）不伪造，只在结果里计数提示。
 - 本插件不处理验证码，也不会替你登录。
-- 接口与事件格式来自 wb-proxy v1.9.2（2026-10-29）的逆向成果，WorkBuddy 改版后可能失效；失效时结果说明里会写出上游返回。
+- 接口与事件格式来自 wb-proxy v1.9.2（2026-10-29）、88lin/workbuddy-auto-signin 与 L0NE-6/WorkBuddy-Daily（2026-10-30）的逆向成果，WorkBuddy 改版后可能失效；失效时结果说明里会写出上游返回。
 
 ## 开发
 
@@ -76,7 +81,7 @@ bun test
 
 ## 致谢
 
-接口、事件构造与派生算法参考 [ardeyouxipianyi/workbuddy2api-hub](https://github.com/ardeyouxipianyi/workbuddy2api-hub)（及其致谢的 Sliverkiss/workbuddy2api 等）；登录、对话与额度来自 [magpie-community/plugins](https://github.com/magpie-community/plugins) 的 WorkBuddy 插件。
+接口、事件构造与派生算法参考 [ardeyouxipianyi/workbuddy2api-hub](https://github.com/ardeyouxipianyi/workbuddy2api-hub)（及其致谢的 Sliverkiss/workbuddy2api 等）；能量盲盒、国际版签到与连登、主题任务参考 [88lin/workbuddy-auto-signin](https://github.com/88lin/workbuddy-auto-signin) 与 [L0NE-6/WorkBuddy-Daily](https://github.com/L0NE-6/WorkBuddy-Daily)；登录、对话与额度来自 [magpie-community/plugins](https://github.com/magpie-community/plugins) 的 WorkBuddy 插件。
 
 ## License
 

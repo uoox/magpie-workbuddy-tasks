@@ -1,9 +1,10 @@
-import { call } from "./http.mjs"
+import { clientHeaders, meterHeaders } from "./client.mjs"
+import { call, soft } from "./http.mjs"
 import { PROMPTS } from "./prompts.mjs"
-import { dayOf, short } from "./util.mjs"
+import { dayOf, hex, num, short } from "./util.mjs"
 
 export const INTL = { origin: "https://www.workbuddy.ai" }
-export const UA_EDGE = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
+const UA_EDGE = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"
 export const MODEL = "deepseek-v4.1-flash"
 const CONVERSATIONS = INTL.origin + "/console/as/conversations/"
 export const ACTIVE_LIMIT = 10
@@ -11,6 +12,15 @@ const KEEP = 8
 const ACTIVE = new Set(["working", "creating", "pending"])
 const ORPHAN_MS = 30 * 60 * 1000
 const OURS = new Set(["Hi", ...PROMPTS])
+
+export const OPTIONS = [
+  { key: "checkin", label: "国际版签到", description: "签到活动开着且今天没签就签；活动没开时什么都不做。", default: true },
+  { key: "activity", label: "国际版对话活跃上报（点亮连登）", description: "每天上报一条 chat_request_send 事件，推进国际版成长中心连登。属于伪造行为事件，国际版风控更严。", default: false },
+  { key: "daily-active", label: "国际版每日活跃会话", description: "在网页端开一条云端 agent 会话说一句 Hi 并跑完，领官方每日 30/50 积分包。跑完即结束会话，释放活跃名额。", default: true },
+  { key: "random-prompt", label: "每日会话用随机提示词", description: "从 60 条内置的日常小问题里随机挑一句代替 Hi，免得每天都是同一句。", default: false },
+]
+
+const DEFAULTS = (k) => OPTIONS.find((o) => o.key === k)?.default === true
 
 export function webHeaders(a) {
   return {
@@ -188,9 +198,35 @@ export async function dailyActive(ctx, a, { model = MODEL, prompt = "Hi", poll =
 
 const retryable = (e) => !e?.final && !e?.restricted && (!e?.status || e.status >= 500 || e.status === 408 || e.status === 429)
 
-export async function runIntl(ctx, a, { option = (k) => k !== "random-prompt", rec = {}, day = dayOf(ctx.now()) } = {}) {
-  if (!option("daily-active")) return { outcome: "ineligible", message: "国际版每日活跃已在插件选项里关掉" }
-  if (rec.restricted === day) return { outcome: "ineligible", message: "今天已遇到 11140 风控，不再碰这个账号" }
+export async function checkin(ctx, a) {
+  const st = await soft(() => call(ctx, "POST", INTL.origin + "/billing/meter/checkin-activity-status", meterHeaders("workbuddy-ai", a), {}), null)
+  if (!st?.active) return null
+  if (st.today_checked_in ?? st.todayCheckedIn) return { outcome: "done", credit: num(st.today_credit ?? st.daily_credit), streak: num(st.streak_days), message: "今天已签到" }
+  try {
+    const got = (await call(ctx, "POST", INTL.origin + "/v2/billing/meter/daily-checkin", meterHeaders("workbuddy-ai", a), {})) ?? {}
+    return { outcome: "claimed", credit: num(got.credit), streak: num(got.streak_days), message: got.message ? `签到：${got.message}` : "签到成功" }
+  } catch (e) {
+    if (e?.restricted) throw e
+    if (e?.code === 1001) return { outcome: "done", message: "今天已签到" }
+    return { outcome: "failed", message: `签到失败：${short(e)}` }
+  }
+}
+
+export async function activity(ctx, a, notes) {
+  const id = "wb-" + hex()
+  const event = { eventCode: "chat_request_send", timestamp: ctx.now(), reportDelay: 0, mode: "craft", conversationId: id, requestId: id, inputLength: 12, requestModelId: MODEL, requestModelName: "DeepSeek V4.1 Flash", isPlan: false, agentName: "default", agentType: "conversation", userId: a.uid }
+  const ok = await soft(async () => (await call(ctx, "POST", INTL.origin + "/v2/report", clientHeaders("workbuddy-ai", a), [event]), true), false)
+  if (!ok) {
+    notes.push("活跃上报被拒")
+    return false
+  }
+  const st = await soft(() => call(ctx, "GET", INTL.origin + "/activity/growth/streak", clientHeaders("workbuddy-ai", a)), null)
+  const days = num(st?.streak?.days)
+  notes.push(days ? `活跃上报 ✓ 连登 ${days} 天` : "活跃上报 ✓")
+  return true
+}
+
+async function daily(ctx, a, rec, day, option) {
   if (rec.intl === day) return { outcome: "done", message: "今天的每日活跃会话已跑完" }
   const prompt = option("random-prompt") ? PROMPTS[Math.floor(ctx.random() * PROMPTS.length)] : "Hi"
   rec.convs = Array.isArray(rec.convs) ? rec.convs : []
@@ -209,10 +245,31 @@ export async function runIntl(ctx, a, { option = (k) => k !== "random-prompt", r
     rec.intl = day
     return { outcome: "claimed", message: `每日活跃会话已跑完（${r.chunks} 段输出），30/50 积分包由 WorkBuddy 稍后发放` }
   } catch (e) {
-    if (e?.restricted) {
-      rec.restricted = day
-      return { outcome: "ineligible", message: "WorkBuddy 以 11140 风控限制了这个账号，今天不再碰它；需在 WorkBuddy 里提交反馈申诉" }
-    }
+    if (e?.restricted) throw e
     return { outcome: "failed", message: `每日活跃会话失败：${short(e)}` }
   }
+}
+
+const RESTRICTED = { outcome: "ineligible", message: "WorkBuddy 以 11140 风控限制了这个账号，今天不再碰它；需在 WorkBuddy 里提交反馈申诉" }
+
+export async function runIntl(ctx, a, { option = DEFAULTS, rec = {}, day = dayOf(ctx.now()) } = {}) {
+  if (rec.restricted === day) return { outcome: "ineligible", message: "今天已遇到 11140 风控，不再碰这个账号" }
+  rec.done ??= {}
+  if (rec.done.day !== day) rec.done = { day }
+  const notes = []
+  let head = null
+  let active = null
+  try {
+    if (option("checkin")) head = await checkin(ctx, a)
+    if (option("activity") && !rec.done.activity) rec.done.activity = await activity(ctx, a, notes)
+    if (option("daily-active")) active = await daily(ctx, a, rec, day, option)
+  } catch (e) {
+    if (!e?.restricted) throw e
+    rec.restricted = day
+    return RESTRICTED
+  }
+  const outs = [head?.outcome, active?.outcome].filter(Boolean)
+  const outcome = active?.outcome === "failed" ? "failed" : outs.includes("claimed") ? "claimed" : outs.includes("done") ? "done" : outs[0] ?? (notes.length ? "done" : "inactive")
+  const message = [head?.message, ...notes, active?.message].filter(Boolean).join("；") || "签到活动未开启，其余任务在插件选项里关掉了"
+  return { outcome, credit: num(head?.credit), streak: num(head?.streak), message }
 }

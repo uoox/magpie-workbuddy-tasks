@@ -1,4 +1,4 @@
-export const RESTRICTED_CODE = 11140
+const RESTRICTED_CODE = 11140
 const RESTRICTED_TEXT = /account has been restricted due to unusual activity|账号存在异常行为/i
 
 export class WBError extends Error {

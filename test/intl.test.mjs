@@ -58,9 +58,9 @@ describe("international daily active", () => {
     expect(create.body).toMatchObject({ prompt: "Hi", model: "deepseek-v4.1-flash", conversationOrigin: "workbuddy-app" })
     expect(create.headers.origin).toBe(INTL.origin)
     expect(rec.intl).toBe("2026-10-20")
-    const n = f.calls.length
+    const n = f.hits("POST", C).length
     expect((await runIntl(testCtx(f.fetch), account, { rec, day: "2026-10-20" })).outcome).toBe("done")
-    expect(f.calls.length).toBe(n)
+    expect(f.hits("POST", C).length).toBe(n)
   })
 
   test("a finished session is stopped, so it frees its active slot", async () => {
@@ -146,7 +146,52 @@ describe("international daily active", () => {
 
   test("the option off leaves it alone", async () => {
     const { f } = server()
-    expect((await runIntl(testCtx(f.fetch), account, { option: () => false })).outcome).toBe("ineligible")
+    expect((await runIntl(testCtx(f.fetch), account, { option: () => false })).outcome).toBe("inactive")
     expect(f.calls).toHaveLength(0)
+  })
+
+  test("checks in on the AI site when its event is open", async () => {
+    const { f } = server()
+    const status = fakeFetch([
+      [`POST ${INTL.origin}/billing/meter/checkin-activity-status`, () => ok({ active: true, today_checked_in: false })],
+      [`POST ${INTL.origin}/v2/billing/meter/daily-checkin`, ({ headers }) => (headers["user-agent"] === "WorkBuddy/5.9.3" && headers["x-domain"] === "copilot.tencent.com" ? ok({ credit: 50, streak_days: 2 }) : { status: 400, json: { code: 1 } })],
+      [`GET *`, (c) => f.fetch(c.url, { method: "GET", headers: c.headers, signal: c.signal })],
+      [`POST *`, (c) => f.fetch(c.url, { method: "POST", headers: c.headers, body: JSON.stringify(c.body) })],
+    ])
+    const r = await runIntl(testCtx(status.fetch), account, { rec: {}, day: "2026-10-20" })
+    expect(r).toMatchObject({ outcome: "claimed", credit: 50, streak: 2 })
+    expect(r.message).toContain("签到成功")
+    expect(r.message).toContain("每日活跃会话已跑完")
+  })
+
+  test("a claimed check-in still fails the day when the session does, so magpie asks again", async () => {
+    const { f } = server({ finishAfter: 1e9 })
+    const status = fakeFetch([
+      [`POST ${INTL.origin}/billing/meter/checkin-activity-status`, () => ok({ active: true, today_checked_in: false })],
+      [`POST ${INTL.origin}/v2/billing/meter/daily-checkin`, () => ok({ credit: 50 })],
+      [`GET *`, (c) => f.fetch(c.url, { method: "GET", headers: c.headers, signal: c.signal })],
+      [`POST *`, (c) => f.fetch(c.url, { method: "POST", headers: c.headers, body: JSON.stringify(c.body) })],
+    ])
+    expect((await runIntl(testCtx(status.fetch, { budgetMs: 20000 }), account, { rec: {}, day: "2026-10-20" })).outcome).toBe("failed")
+  })
+
+  test("the activity report is off by default and reports once a day when on", async () => {
+    const { f } = server()
+    const seen = []
+    const g = fakeFetch([
+      [`POST ${INTL.origin}/v2/report`, ({ body, headers }) => (seen.push({ body, ua: headers["user-agent"] }), ok(null))],
+      [`GET ${INTL.origin}/activity/growth/streak`, () => ok({ streak: { days: 4 } })],
+      [`GET *`, (c) => f.fetch(c.url, { method: "GET", headers: c.headers, signal: c.signal })],
+      [`POST *`, (c) => f.fetch(c.url, { method: "POST", headers: c.headers, body: JSON.stringify(c.body) })],
+    ])
+    await runIntl(testCtx(g.fetch), account, { rec: {}, day: "2026-10-20" })
+    expect(seen).toHaveLength(0)
+    const rec = {}
+    const r = await runIntl(testCtx(g.fetch), account, { rec, day: "2026-10-20", option: (k) => k !== "random-prompt" })
+    expect(r.message).toContain("活跃上报 ✓ 连登 4 天")
+    expect(seen[0].body[0]).toMatchObject({ eventCode: "chat_request_send", userId: "100012345678", requestModelId: "deepseek-v4.1-flash" })
+    expect(seen[0].ua).toBe("WorkBuddy/5.9.3 workbuddy-ai/5.9.3 CLI/2.165.0")
+    await runIntl(testCtx(g.fetch), account, { rec, day: "2026-10-20", option: (k) => k !== "random-prompt" })
+    expect(seen).toHaveLength(1)
   })
 })

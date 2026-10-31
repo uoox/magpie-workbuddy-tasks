@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { CN, RERUN_MS, checkin, growth, report, runCN, travel, streakBonus, useClient } from "../src/cn.mjs"
+import { CLIENTS } from "../src/client.mjs"
+import { CN, RERUN_MS, THEME, blindbox, checkin, growth, report, runCN, travel, streakBonus } from "../src/cn.mjs"
 import { account, fakeFetch, ok, testCtx } from "./fake.mjs"
 
 const STATUS = `POST ${CN.chat}/v2/billing/meter/checkin-activity-status`
@@ -80,7 +81,7 @@ describe("checkin", () => {
   })
 
   test("the client version follows the community plugin's", async () => {
-    useClient({ app: "6.0.1", cli: "2.200.0" })
+    Object.assign(CLIENTS.workbuddy, { app: "6.0.1", cli: "2.200.0" })
     try {
       const f = fakeFetch([[STATUS, () => ok({ active: false })], [`POST ${CN.chat}/v2/report`, () => ok(null)]])
       await checkin(testCtx(f.fetch), account)
@@ -89,7 +90,7 @@ describe("checkin", () => {
       expect(f.calls[1].headers["user-agent"]).toBe("WorkBuddy/6.0.1 WorkBuddy/6.0.1 CLI/2.200.0")
       expect(f.calls[1].headers["x-ide-version"]).toBe("6.0.1")
     } finally {
-      useClient({ app: "5.9.3", cli: "2.165.0" })
+      Object.assign(CLIENTS.workbuddy, { app: "5.9.3", cli: "2.165.0" })
     }
   })
 
@@ -176,6 +177,31 @@ describe("growth tasks", () => {
     expect(ev).toMatchObject({ id: "ex_xQHHD1u5Jkua", name: "无畏契约拼豆专家" })
   })
 
+  test("the theme task applies the theme for real, then reports it", async () => {
+    const s = growthServer({ tasks: [{ task_code: "Hp_Appearance", accept_status: "accepted", task_type: "single", progress: { current: 0, target: 1 } }] })
+    const base = s.f.fetch
+    const order = []
+    const f = fakeFetch([
+      [`POST ${CN.web}/v2/operation-platform/appearance/resources`, () => (order.push("resources"), ok({ resources: [{ id: "theme-new", name: "和平精英冬季", vip_level: "free", series: "craft" }] }))],
+      [`POST ${CN.web}/portal/user-asset/appearance/set`, ({ body }) => (order.push(`set ${body.resource_key}`), ok(null))],
+      [`POST ${CN.chat}/v2/report`, (c) => (order.push("report"), base(c.url, { method: "POST", body: JSON.stringify(c.body) }))],
+      [`GET ${CN.chat}/*`, (c) => base(c.url, { method: "GET" })],
+      [`POST ${CN.chat}/*`, (c) => base(c.url, { method: "POST", body: JSON.stringify(c.body) })],
+      [`POST ${CN.web}/*`, (c) => base(c.url, { method: "POST" })],
+    ])
+    await growth(testCtx(f.fetch), account, [])
+    expect(order).toEqual(["resources", "set theme-new", "report"])
+    expect(s.reported[0]).toMatchObject({ eventCode: "appearance_skin_apply", id: "theme-new", name: "和平精英冬季", type: "personal" })
+    expect(f.hits("POST", `${CN.web}/portal/user-asset/appearance/set`)[0].headers["user-agent"]).toStartWith("WorkBuddy/")
+  })
+
+  test("the theme falls back to the known one when the catalog says nothing", async () => {
+    const f = fakeFetch([[`POST ${CN.web}/*`, () => ok({ resources: [] })]])
+    const { applyTheme } = await import("../src/cn.mjs")
+    expect(await applyTheme(testCtx(f.fetch), account)).toEqual(THEME)
+    expect(f.calls[1].body).toEqual({ kind: "theme", resource_key: THEME.id })
+  })
+
   test("a task whose accept fails is not reported", async () => {
     const s = growthServer({
       tasks: [{ task_code: "create_canvas", accept_status: "not_accepted", task_type: "single", progress: { current: 0, target: 1 } }],
@@ -234,6 +260,27 @@ describe("cat travel", () => {
     await travel(testCtx(f.fetch), account, notes)
     expect(notes).toEqual(["猫猫今天已旅行过"])
     expect(f.calls).toHaveLength(1)
+  })
+})
+
+describe("energy blind box", () => {
+  test("opens as many as the energy pays for, up to one call's limit", async () => {
+    const f = fakeFetch([
+      [`GET ${CN.chat}/v2/activity/growth/buddy/quota`, () => ok({ affordable: 3, max_open_count: 2, balance: 34 })],
+      [`POST ${CN.chat}/v2/activity/growth/buddy/open`, () => ok({ results: [{ instance: { name: "橘猫" } }, { template: { name: "黑猫" } }] })],
+    ])
+    const notes = []
+    await blindbox(testCtx(f.fetch), account, notes)
+    expect(f.hits("POST", `${CN.chat}/v2/activity/growth/buddy/open`)[0].body).toMatchObject({ count: 2 })
+    expect(notes).toEqual(["盲盒开了 2 个：橘猫、黑猫"])
+  })
+
+  test("not enough energy opens nothing and says nothing", async () => {
+    const f = fakeFetch([[`GET ${CN.chat}/v2/activity/growth/buddy/quota`, () => ok({ affordable: 0, balance: 4 })]])
+    const notes = []
+    await blindbox(testCtx(f.fetch), account, notes)
+    expect(f.calls).toHaveLength(1)
+    expect(notes).toEqual([])
   })
 })
 

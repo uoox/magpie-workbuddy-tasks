@@ -1,5 +1,6 @@
+import { CLIENTS, clientHeaders, enterpriseHeaders, meterHeaders } from "./client.mjs"
 import { machineId, sessionId } from "./fingerprint.mjs"
-import { call, soft } from "./http.mjs"
+import { WBError, call, soft } from "./http.mjs"
 import { dayOf, hex, inNight, num, short, uuid } from "./util.mjs"
 
 export const CN = {
@@ -8,15 +9,16 @@ export const CN = {
   web: "https://www.workbuddy.cn",
 }
 
-export const CLIENT = { app: "5.9.3", cli: "2.165.0" }
+const UA_WEB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 
-export function useClient(site) {
-  if (typeof site?.app === "string" && site.app) CLIENT.app = site.app
-  if (typeof site?.cli === "string" && site.cli) CLIENT.cli = site.cli
-}
-
-const uaDesktop = () => `WorkBuddy/${CLIENT.app} WorkBuddy/${CLIENT.app} CLI/${CLIENT.cli}`
-export const UA_WEB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+export const OPTIONS = [
+  { key: "activity", label: "每日对话活跃上报（点亮连登）", description: "签到时上报一条 chat_request_send 事件，推进成长中心连登天数与热力墙。属于伪造行为事件。", default: true },
+  { key: "travel", label: "猫猫旅行", description: "归来自动领奖，在家自动派出。", default: true },
+  { key: "night", label: "夜猫子任务", description: "签到落在北京时间 23:00–08:00 时上报一次夜间事件，累计 3 天领奖。", default: true },
+  { key: "streak", label: "连登管家", description: "昨日漏签用补签卡补上、连登 7/14/28 天档位兑换、抽完抽奖次数、领新手礼包与活动补偿。", default: true },
+  { key: "growth", label: "成长任务与积分任务", description: "批量接取任务、上报对应行为事件、领奖。属于伪造行为事件，风险最高。主题任务会真的把桌面端主题换成和平精英。", default: true },
+  { key: "blindbox", label: "Buddy 能量盲盒", description: "能量够开就开（成长任务领完奖之后）。", default: true },
+]
 
 export const SPECS = {
   create_canvas: { kind: "canvas", target: 1, name: "创建设计任务" },
@@ -27,21 +29,19 @@ export const SPECS = {
   automation_1: { kind: "automation", target: 1, name: "创建自动化任务" },
   playbook_prompt: { kind: "playbook", target: 1, name: "灵感案例使用" },
   Expert_lighthouse: { kind: "lighthouse", target: 1, name: "轻量云专家使用" },
-  Buddy_App: { kind: "buddy5", target: 1, name: "进入 Buddy 应用" },
-  Buddy_App_QQ: { kind: "buddy5", target: 1, name: "企鹅教师助手" },
+  Buddy_App: { desktop: true, name: "进入 Buddy 应用" },
+  Buddy_App_QQ: { desktop: true, name: "企鹅教师助手" },
   Hp_Appearance: { kind: "skin", target: 1, name: "应用主题外观" },
   chat_5: { kind: "chat", target: 5, name: "发起 5 次对话" },
   "Model_chat_GLM5.2": { kind: "glmchat", target: 1, name: "体验 GLM-5.2" },
-  black_cat: { kind: "cat", target: 3, name: "夜猫子任务" },
-  RichMeow_Chat: { kind: "richmeow", target: 1, name: "桌面对话事件链" },
-  Library_read: { kind: "library", target: 1, name: "浏览资料库" },
+  black_cat: { kind: "cat", target: 3, name: "夜猫子任务", night: true },
+  RichMeow_Chat: { desktop: true, name: "桌面对话事件链" },
+  Library_read: { desktop: true, name: "浏览资料库" },
   first_buddy: { kind: "chat", target: 1, name: "领取一只 Buddy" },
   WorkBuddy_Valorant: { kind: "expert", target: 1, name: "体验无畏契约拼豆专家", expert: ["ex_xQHHD1u5Jkua", "无畏契约拼豆专家"] },
   wb_wechat_oa_subscribe_task: { unforgeable: true, name: "关注官方公众号" },
   Expert_Philanthropy: { unforgeable: true, name: "公益爱心捐赠" },
 }
-
-export const DESKTOP_ONLY = new Set(["RichMeow_Chat", "Library_read", "Buddy_App", "Buddy_App_QQ"])
 
 export const EXPERTS = [
   ["ex_PZw8Gu81HfN4", "运维工程师"], ["ex_ROsDtJbzADFV", "产品经理"],
@@ -62,49 +62,13 @@ export const TEAMS = [
   ["DesignEngineTeam", "设计引擎团队"], ["HrOperationsTeam", "人力运营团队"],
 ]
 
-const domainOf = (a) => a.domain || "copilot.tencent.com"
-
-export function enterpriseHeaders(a) {
-  const id = typeof a?.enterpriseId === "string" ? a.enterpriseId.trim() : ""
-  return id ? { "X-Enterprise-Id": id, "X-Tenant-Id": id } : {}
-}
-
-export function meterHeaders(a) {
-  return {
-    "Content-Type": "application/json",
-    Accept: "application/json",
-    "User-Agent": "WorkBuddy/" + CLIENT.app,
-    Authorization: "Bearer " + a.access,
-    "X-User-Id": a.uid ?? "",
-    "X-Domain": domainOf(a),
-    "X-Product": "SaaS",
-    "X-IDE-Type": "WorkBuddy",
-    ...enterpriseHeaders(a),
-  }
-}
-
 export function chatHeaders(a) {
   return {
-    "Content-Type": "application/json",
-    Accept: "application/json, text/plain, */*",
-    "X-Requested-With": "XMLHttpRequest",
+    ...clientHeaders("workbuddy", a),
     Origin: CN.billing,
     Referer: CN.billing + "/",
     "X-CodeBuddy-Request": "1",
     "Accept-Language": "zh-CN",
-    "X-Agent-Intent": "craft",
-    "X-Agent-Purpose": "conversation",
-    "X-Agent-Type": "main",
-    "X-IDE-Name": "WorkBuddy",
-    "X-IDE-Type": "WorkBuddy",
-    "X-IDE-Version": CLIENT.app,
-    "X-Private-Data": "true",
-    "X-Product": "SaaS",
-    "X-Domain": domainOf(a),
-    "User-Agent": uaDesktop(),
-    "X-User-Id": a.uid ?? "",
-    Authorization: "Bearer " + a.access,
-    "X-Request-ID": hex(),
   }
 }
 
@@ -114,12 +78,12 @@ export function billingHeaders(a) {
     "Content-Type": "application/json",
     Accept: "application/json, text/plain, */*",
     "X-Requested-With": "XMLHttpRequest",
-    "User-Agent": "WorkBuddy/" + CLIENT.app,
+    "User-Agent": "WorkBuddy/" + CLIENTS.workbuddy.app,
     Origin: CN.billing,
     Referer: CN.billing + "/",
     Authorization: "Bearer " + a.access,
     "X-User-Id": a.uid ?? "",
-    "X-Domain": domainOf(a),
+    "X-Domain": a.domain || "copilot.tencent.com",
     "X-CodeBuddy-Request": "1",
     "Accept-Language": "zh-CN",
     "X-Request-ID": hex(),
@@ -147,15 +111,15 @@ export function webHeaders(a) {
 export async function checkin(ctx, a) {
   let st
   try {
-    st = (await call(ctx, "POST", CN.chat + "/v2/billing/meter/checkin-activity-status", meterHeaders(a), {})) ?? {}
+    st = (await call(ctx, "POST", CN.chat + "/v2/billing/meter/checkin-activity-status", meterHeaders("workbuddy", a), {})) ?? {}
   } catch (e) {
     return refused(ctx, a, e)
   }
   if (!st.active) return { outcome: "inactive", message: "签到活动当前未开启" }
-  if (st.today_checked_in) return { outcome: "done", credit: num(st.today_credit), streak: num(st.streak_days), message: "今天已签到" }
+  if (st.today_checked_in ?? st.todayCheckedIn) return { outcome: "done", credit: num(st.today_credit ?? st.daily_credit), streak: num(st.streak_days), message: "今天已签到" }
   for (let attempt = 0; ; attempt++) {
     try {
-      const got = (await call(ctx, "POST", CN.chat + "/v2/billing/meter/daily-checkin", meterHeaders(a), {})) ?? {}
+      const got = (await call(ctx, "POST", CN.chat + "/v2/billing/meter/daily-checkin", meterHeaders("workbuddy", a), {})) ?? {}
       const said = String(got.message ?? "")
       if (PENDING.test(said) || /失败/.test(said)) return { outcome: "failed", message: `签到没成：${said}` }
       return { outcome: "claimed", credit: num(got.credit), streak: num(got.streak_days), message: said ? `签到：${said}` : "签到成功" }
@@ -174,10 +138,11 @@ export async function checkin(ctx, a) {
 const PENDING = /处理中|请勿重复操作|系统繁忙|稍后再试/
 
 async function refused(ctx, a, e) {
+  if (!(e instanceof WBError)) throw e
   if (e?.restricted) return { outcome: "ineligible", restricted: true, message: "WorkBuddy 以 11140 风控限制了这个账号，本插件今天不再碰它；需在 WorkBuddy 里提交反馈申诉" }
   if (e?.status === 401) {
     try {
-      await call(ctx, "POST", CN.chat + "/billing/meter/get-user-resource-summary", meterHeaders(a), {})
+      await call(ctx, "POST", CN.chat + "/billing/meter/get-user-resource-summary", meterHeaders("workbuddy", a), {})
       return { outcome: "captcha", message: "签到接口回 401 而积分接口正常：WorkBuddy 的签到只认官方 App 的设备 token，请在 WorkBuddy App 里手动签到" }
     } catch {
       return { outcome: "failed", message: "WorkBuddy 拒绝了这个账号的登录态（401），请重新登录" }
@@ -190,7 +155,7 @@ async function refused(ctx, a, e) {
   return { outcome: "failed", message: `签到失败：${msg}` }
 }
 
-export function buildEvent(a, kind, idx, expert, now) {
+export function buildEvent(a, kind, idx, pick, now) {
   const cid = `wb-task-${now}-${idx}`
   const rid = `${cid}-req`
   const userId = a.uid
@@ -202,7 +167,7 @@ export function buildEvent(a, kind, idx, expert, now) {
     case "expert":
     case "team":
     case "lighthouse": {
-      const [id, name] = expert ?? (kind === "lighthouse" ? ["ex_2cvvUZQhDyeJ", "腾讯轻量云专家"] : kind === "team" ? ["CloudOpsTeam", "运维专家团队"] : ["ContentCreator", "内容创作专家"])
+      const [id, name] = pick ?? (kind === "lighthouse" ? ["ex_2cvvUZQhDyeJ", "腾讯轻量云专家"] : kind === "team" ? ["CloudOpsTeam", "运维专家团队"] : ["ContentCreator", "内容创作专家"])
       return { eventCode: "expert_actual_use", timestamp: now, reportDelay: 0, mode: "CLOUD", id, name, expertTitle: name, type: "02-Engineering", expertType: kind === "team" ? "team" : "agent", source: "builtin", version: "1.0.2", cost: 0, characterCount: 12, conversationId: cid, requestId: rid, messageId: rid, requestModelId: "deepseek-v4-flash", requestModelName: "DeepSeek V4 Flash", userId }
     }
     case "skill":
@@ -211,8 +176,10 @@ export function buildEvent(a, kind, idx, expert, now) {
       return { eventCode: "automated_task_create_suc", timestamp: now, reportDelay: 0, name: "每周工作整理", type: "cron", source: "manually", modelId: "deepseek-v4-flash", modelIsThinking: false, conversationId: cid, requestId: rid, schedule: { type: "recurring", rrule: "FREQ=WEEKLY;BYDAY=FR;BYHOUR=9;BYMINUTE=0" }, prompt: "每周五自动整理本周工作", userId }
     case "playbook":
       return { eventCode: "playbook_prompt_send", timestamp: now, reportDelay: 0, id: "worker-ledger-freedom-dashboard", name: "打工人小账本", type: "other", promptLength: 10, isOfficial: 1, source: "discover", conversationId: cid, requestId: rid, userId }
-    case "skin":
-      return { eventCode: "appearance_skin_apply", timestamp: now, reportDelay: 0, action: "apply", source: "settings_close", id: "theme-tkmw7j", vipLevel: "free", series: "craft", type: "unknown", name: "和平精英激战金秋", userId }
+    case "skin": {
+      const t = pick ?? THEME
+      return { eventCode: "appearance_skin_apply", timestamp: now, reportDelay: 0, action: "apply", source: "settings_close", id: t.id, vipLevel: t.vipLevel, series: t.series, type: "personal", name: t.name, userId }
+    }
     case "chat":
     case "glmchat":
     case "cat": {
@@ -220,7 +187,18 @@ export function buildEvent(a, kind, idx, expert, now) {
       return { eventCode: "chat_request_send", timestamp: now, reportDelay: 0, mode: kind === "cat" ? "night" : "craft", conversationId: cid, requestId: rid, inputLength: 12, requestModelId: glm ? "glm-5.2" : "deepseek-v4-flash", requestModelName: glm ? "GLM-5.2" : "DeepSeek V4 Flash", isPlan: false, agentName: "default", agentType: "conversation", userId }
     }
   }
-  return { eventCode: "heartbeat", timestamp: now, userId }
+}
+
+export const THEME = { id: "theme-tkmw7j", name: "和平精英激战金秋", vipLevel: "free", series: "craft" }
+
+const desktopWeb = (a) => ({ ...webHeaders(a), "User-Agent": clientHeaders("workbuddy", a)["User-Agent"] })
+
+export async function applyTheme(ctx, a) {
+  const d = await soft(() => call(ctx, "POST", CN.web + "/v2/operation-platform/appearance/resources", desktopWeb(a), { platform: "client", kind: "theme", version: CLIENTS.workbuddy.app, lang: "zh-CN" }), null)
+  const hit = (d?.resources ?? []).find((x) => /和平精英/.test(x?.name ?? "") || /pubg/i.test(x?.id ?? ""))
+  const t = hit ? { id: hit.id, name: hit.name, vipLevel: hit.vip_level ?? "free", series: hit.series ?? "craft" } : THEME
+  await soft(() => call(ctx, "POST", CN.web + "/portal/user-asset/appearance/set", desktopWeb(a), { kind: "theme", resource_key: t.id }), null)
+  return t
 }
 
 export const report = (ctx, a, events) => soft(async () => (await call(ctx, "POST", CN.chat + "/v2/report", chatHeaders(a), events), true), false)
@@ -297,17 +275,17 @@ async function progress(ctx, a, t, tally) {
     tally.errors.push(`${spec.name}领奖失败：${r.msg}`)
     return 0
   }
-  if (DESKTOP_ONLY.has(t.code)) {
+  if (spec.desktop) {
     tally.desktop.add(spec.name)
     return 0
   }
-  if (t.code === "black_cat") return 0
+  if (spec.night) return 0
   if (t.status === "not_accepted" && t.type !== "auto") return 0
   const need = Math.max(1, t.target - t.current)
-  const pool = spec.expert ? [spec.expert] : spec.kind === "team" ? TEAMS : spec.kind === "expert" ? EXPERTS : null
+  const pool = spec.expert ? [spec.expert] : spec.kind === "team" ? TEAMS : spec.kind === "expert" ? EXPERTS : spec.kind === "skin" ? [await applyTheme(ctx, a)] : null
   for (let i = 0; i < need; i++) {
-    const expert = pool ? pool[(t.current + i) % pool.length] : undefined
-    await report(ctx, a, [buildEvent(a, spec.kind, i, expert, ctx.now())])
+    const pick = pool ? pool[(t.current + i) % pool.length] : undefined
+    await report(ctx, a, [buildEvent(a, spec.kind, i, pick, ctx.now())])
     if (i < need - 1) await ctx.sleep(ctx.gap)
   }
   await ctx.sleep(1500)
@@ -368,7 +346,7 @@ export async function growth(ctx, a, notes, reserve = 12000) {
   for (const t of list) {
     if (t.type === "auto") continue
     const spec = SPECS[t.code]
-    const work = spec && !spec.unforgeable && t.status !== "claimed" && !DESKTOP_ONLY.has(t.code) && t.code !== "black_cat"
+    const work = spec && !spec.unforgeable && !spec.desktop && !spec.night && t.status !== "claimed"
     if (work && ctx.left() < reserve) {
       tally.later++
       continue
@@ -517,18 +495,31 @@ export async function night(ctx, a, notes) {
   return true
 }
 
+export async function blindbox(ctx, a, notes) {
+  const q = (await call(ctx, "GET", CN.chat + "/v2/activity/growth/buddy/quota", chatHeaders(a))) ?? {}
+  const count = Math.min(num(q.affordable), Math.max(1, num(q.max_open_count)))
+  if (count <= 0) return
+  const d = (await call(ctx, "POST", CN.chat + "/v2/activity/growth/buddy/open", chatHeaders(a), { count, client_token: uuid() })) ?? {}
+  const names = (d.results ?? []).map((r) => r?.instance?.name || r?.template?.name).filter(Boolean)
+  notes.push(`盲盒开了 ${count} 个${names.length ? "：" + names.join("、") : ""}`)
+}
+
 export const RERUN_MS = 3 * 3600 * 1000
 
 export const STEPS = [
   { key: "activity", label: "对话活跃上报", daily: true, run: (ctx, a, notes) => activity(ctx, a, notes) },
-  { key: "travel", label: "猫猫旅行", run: (ctx, a, notes) => travel(ctx, a, notes) },
   { key: "night", label: "夜猫子任务", daily: true, run: (ctx, a, notes) => night(ctx, a, notes) },
   { key: "streak", label: "连登管家", daily: true, run: (ctx, a, notes, day) => streakBonus(ctx, a, notes, day).then(() => true) },
   { key: "growth", label: "成长任务", run: (ctx, a, notes) => growth(ctx, a, notes) },
+  { key: "blindbox", label: "能量盲盒", run: (ctx, a, notes) => blindbox(ctx, a, notes) },
+  { key: "travel", label: "猫猫旅行", run: (ctx, a, notes) => travel(ctx, a, notes) },
 ]
 
-export async function runCN(ctx, a, { option = () => true, rec = {}, day = dayOf(ctx.now()) } = {}) {
+const DEFAULTS = (k) => OPTIONS.find((o) => o.key === k)?.default === true
+
+export async function runCN(ctx, a, { option = DEFAULTS, rec = {}, day = dayOf(ctx.now()), onHead } = {}) {
   const head = await checkin(ctx, a)
+  onHead?.(head)
   const notes = []
   rec.done ??= {}
   if (rec.done.day !== day) rec.done = { day }

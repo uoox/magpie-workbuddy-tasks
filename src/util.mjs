@@ -9,14 +9,12 @@ export const hex = () => randomUUID().replaceAll("-", "")
 
 export const uuid = () => randomUUID()
 
-export const BEIJING_MS = 8 * 3600 * 1000
+const BEIJING_MS = 8 * 3600 * 1000
 
 export const dayOf = (ms) => new Date(ms + BEIJING_MS).toISOString().slice(0, 10)
 
-export const hourOf = (ms) => new Date(ms + BEIJING_MS).getUTCHours()
-
 export const inNight = (ms) => {
-  const h = hourOf(ms)
+  const h = new Date(ms + BEIJING_MS).getUTCHours()
   return h >= 23 || h < 8
 }
 
@@ -29,7 +27,7 @@ export function makeCtx({
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   now = () => Date.now(),
   random = Math.random,
-  budgetMs = 75000,
+  budgetMs,
   gap = 1000,
 } = {}) {
   const deadline = now() + budgetMs
