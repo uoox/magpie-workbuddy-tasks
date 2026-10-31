@@ -43,6 +43,8 @@ wb-proxy 自己常驻调度（09:00/21:00 签到与猫猫、22:00 保活、01:00
 
 前提：magpie 支持插件的 `auth.checkin` 钩子（0.1.1293 起，0.1.1647 上验证过），且已装社区插件 `@magpie-community/opencode-workbuddy-auth`（0.2.5 上验证过）。
 
+本仓库带 GitHub 话题 `magpie-plugin`，magpie 的「插件」页会把它列在未经审核的 GitHub 插件里，点安装即可；也可以用命令：
+
 ```sh
 magpie plugin add github:uoox/magpie-workbuddy-tasks   # 或本地目录的绝对路径
 magpie plugin use github:uoox/magpie-workbuddy-tasks workbuddy
